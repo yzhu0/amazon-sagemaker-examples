@@ -25,14 +25,15 @@ logger.addHandler(logging.StreamHandler(sys.stdout))
 if 'SAGEMAKER_METRICS_DIRECTORY' in os.environ:
     log_file_handler = logging.FileHandler(join(os.environ['SAGEMAKER_METRICS_DIRECTORY'], "metrics.json"))
     log_file_handler.setFormatter(
-    "{'time':'%(asctime)s', 'name': '%(name)s', \
-    'level': '%(levelname)s', 'message': '%(message)s'}"
+        "{'time':'%(asctime)s', 'name': '%(name)s', \
+        'level': '%(levelname)s', 'message': '%(message)s'}"
     )
     logger.addHandler(log_file_handler)
-    
+
+
 # Based on https://github.com/pytorch/examples/blob/master/mnist/main.py
 class Net(nn.Module):
-    def __init__(self, hidden_channels, kernel_size=5, drop_out=.5):
+    def __init__(self, hidden_channels, kernel_size, drop_out):
         super(Net, self).__init__()
         self.conv1 = nn.Conv2d(1, hidden_channels, kernel_size=kernel_size)
         self.conv2 = nn.Conv2d(hidden_channels, 20, kernel_size=kernel_size)
@@ -76,8 +77,8 @@ def _average_gradients(model):
     size = float(dist.get_world_size())
     for param in model.parameters():
         dist.all_reduce(param.grad.data, op=dist.reduce_op.SUM)
-        param.grad.data /= size 
-    
+        param.grad.data /= size
+
 
 def train(args, tracker=None):
     is_distributed = len(args.hosts) > 1 and args.backend is not None
@@ -86,7 +87,7 @@ def train(args, tracker=None):
     logger.debug("Number of gpus available - {}".format(args.num_gpus))
     kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
     device = torch.device("cuda" if use_cuda else "cpu")
-    
+
     if is_distributed:
         # Initialize the distributed environment.
         world_size = len(args.hosts)
@@ -105,7 +106,7 @@ def train(args, tracker=None):
 
     train_loader = _get_train_data_loader(args.batch_size, args.data_dir, is_distributed, **kwargs)
     test_loader = _get_test_data_loader(args.test_batch_size, args.data_dir, **kwargs)
-    
+
     logger.info("Processes {}/{} ({:.0f}%) of train data".format(
         len(train_loader.sampler), len(train_loader.dataset),
         100. * len(train_loader.sampler) / len(train_loader.dataset)
@@ -123,7 +124,7 @@ def train(args, tracker=None):
     else:
         # single-machine multi-gpu case or single-machine or multi-machine cpu case
         model = torch.nn.DataParallel(model)
-    
+
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
     else:
@@ -144,10 +145,10 @@ def train(args, tracker=None):
             if batch_idx % args.log_interval == 0:
                 logger.info('Train Epoch: {} [{}/{} ({:.0f}%)], Train Loss: {:.6f};'.format(
                     epoch, batch_idx * len(data), len(train_loader.sampler),
-                    100. * batch_idx / len(train_loader), loss.item()))
+                           100. * batch_idx / len(train_loader), loss.item()))
         test(model, test_loader, device, tracker)
     save_model(model, args.model_dir)
-    
+
 
 def test(model, test_loader, device, tracker=None):
     model.eval()
@@ -164,14 +165,18 @@ def test(model, test_loader, device, tracker=None):
     test_loss /= len(test_loader.dataset)
     logger.info('Test Average loss: {:.4f}, Test Accuracy: {:.0f}%;\n'.format(
         test_loss, 100. * correct / len(test_loader.dataset)))
-    
-    
+
+
 def model_fn(model_dir):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = torch.nn.DataParallel(Net())
+
+    hidden_channels = int(os.environ.get('hidden_channels', '5'))
+    kernel_size = int(os.environ.get('kernel_size', '5'))
+    dropout = float(os.environ.get('dropout', '0.5'))
+    model = torch.nn.DataParallel(Net(hidden_channels, kernel_size, dropout))
     with open(os.path.join(model_dir, 'model.pth'), 'rb') as f:
         model.load_state_dict(torch.load(f))
-    return model.to(device)
+        return model.to(device)
 
 def save_model(model, model_dir):
     logger.info("Saving the model.")
